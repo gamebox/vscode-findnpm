@@ -6,6 +6,7 @@
   "engines": {
     "vscode": "^1.39.0"
   },
+  "publisher": "anthony-raymond-bullard",
   "categories": [
     "Other"
   ],
