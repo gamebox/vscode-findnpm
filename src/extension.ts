@@ -1,125 +1,166 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import runCmd from "./runCmd";
+import {
+  PackageDetails,
+  QuickPickPackage,
+  NPMPackage,
+  PackageAction
+} from "./types";
+import {
+  packagesFromString,
+  packageToQuickPick,
+  flagsFromAction
+} from "./utils";
 const spawnCMD = require("spawn-command");
 
-interface NPMPackage extends vscode.QuickPickItem {
-  packageName: string;
-}
+let channel: vscode.OutputChannel | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-  let disposable = vscode.commands.registerCommand(
-    "extension.findnpm",
-    async () => {
-      vscode.window.showInformationMessage("Hello World!");
-      const query = await vscode.window.showInputBox({
-        prompt: "Search terms"
-      });
-      if (query === undefined) {
-        return;
-      }
-
-      const selection:
-        | NPMPackage
-        | undefined = await vscode.window.showQuickPick<NPMPackage>(
-        search(query)
-      );
-
-      if (selection === undefined) {
-        return;
-      }
-
-      vscode.env.openExternal(
-        vscode.Uri.parse(
-          `https://www.npmjs.org/package/${selection.packageName}`
-        )
-      );
-    }
-  );
-
-  context.subscriptions.push(disposable);
+  channel = vscode.window.createOutputChannel("FindNPM");
+  const disposables: vscode.Disposable[] = [
+    vscode.commands.registerCommand("extension.findnpm.view", viewCommand),
+    vscode.commands.registerCommand("extension.findnpm.install", () =>
+      installCommand(PackageAction.install)
+    ),
+    vscode.commands.registerCommand("extension.findnpm.installDev", () =>
+      installCommand(PackageAction.installDev)
+    ),
+    vscode.commands.registerCommand("extension.findnpm.installSave", () =>
+      installCommand(PackageAction.installSave)
+    ),
+    channel
+  ];
+  context.subscriptions.push(...disposables);
 }
 
-function search(packageName: string): Promise<NPMPackage[]> {
-  return new Promise((resolve, reject) => {
-    const process = spawnCMD(`npm s --long ${packageName}`);
-    let data = "";
-    const channel = vscode.window.createOutputChannel("findnpm");
-    process.stdout.on("data", (d: string) => {
-      data += d;
-    });
-    process.stdout.on("close", (status: boolean) => {
-      if (status === false) {
-        const packages = packagesFromString(data);
-        channel.appendLine(JSON.stringify(packages));
-        resolve(packages);
-      } else {
-        reject(
-          `NPM search failed ${
-            status ? "status code" + status : "for some reason."
-          }.  Data was ${data}`
-        );
-      }
+async function installCommand(action: PackageAction) {
+  const packages: PackageDetails[] = await getPackages();
+
+  const query = await getQuery();
+  if (query === undefined) {
+    return;
+  }
+
+  const selection = await getSelection(query);
+  if (selection === undefined) {
+    return;
+  }
+
+  const target = await getTarget(packages);
+  if (target === undefined) {
+    vscode.window.showErrorMessage(
+      `Can only install packages to npm packages inside of a workspace folder`
+    );
+    return;
+  }
+
+  await installPackage(
+    selection.packageName,
+    // Below we use the length of '/package.json' to find the root path of the
+    // project so we don't rely on OS specific details.  I.e., '\package.json' is
+    // the same length.
+    target.uri.path.slice(0, target.uri.path.length - "/package.json".length),
+    flagsFromAction(action)
+  );
+}
+
+async function viewCommand() {
+  const query = await getQuery();
+  if (query === undefined) {
+    return;
+  }
+
+  const selection = await getSelection(query);
+  if (selection === undefined) {
+    return;
+  }
+
+  vscode.env.openExternal(
+    vscode.Uri.parse(`https://www.npmjs.org/package/${selection.packageName}`)
+  );
+}
+
+async function getPackages(): Promise<PackageDetails[]> {
+  const packageJsonUris = await vscode.workspace.findFiles(
+    "**/package.json",
+    "**/node_modules/**"
+  );
+  if (channel !== undefined) {
+    channel.appendLine(
+      `Here are the workspace folders: ${(
+        vscode.workspace.workspaceFolders || []
+      ).map(f => f.name)}`
+    );
+  }
+  return await Promise.all(
+    packageJsonUris.map(uri => fs.promises.readFile(uri.fsPath))
+  ).then(buffers => {
+    return buffers.map((b, idx) => {
+      return {
+        uri: packageJsonUris[idx],
+        package: JSON.parse(b.toString("UTF-8"))
+      };
     });
   });
 }
 
-function processLine(line: string): string[] {
-  return line.split(" | ").map(l => l.trim());
+function getQuery(): Thenable<string | undefined> {
+  return vscode.window.showInputBox({
+    prompt: "Search terms"
+  });
 }
 
-function processRawString(
-  data: string
-): { lines: string[]; columns: string[] } {
-  const rawLines = data.split("\n");
-  const [firstLine, lines] = [rawLines[0], rawLines.slice(1)];
-  const columns = processLine(firstLine);
-  return { lines, columns };
+function getSelection(query: string): Thenable<NPMPackage | undefined> {
+  return vscode.window.showQuickPick<NPMPackage>(search(query));
 }
 
-function rawPackageMap(
-  line: string,
-  columns: string[]
-): { [key: string]: string } {
-  return processLine(line).reduce((map, val, idx) => {
-    return {
-      ...map,
-      [columns[idx]]: val === "" ? undefined : val
-    };
-  }, {});
-}
-
-function npmPackage(pkg: { [key: string]: string }): NPMPackage {
-  return {
-    label: pkg["NAME"] || "[No name]",
-    detail: pkg["DESCRIPTION"] || "[No Description]",
-    packageName: pkg["NAME"],
-    description: pkg["VERSION"] || "[No Version]"
-  };
-}
-
-function mergePackage(
-  npm: NPMPackage,
-  pkg: { [key: string]: string }
-): NPMPackage {
-  return {
-    ...npm,
-    detail: [npm.detail, pkg["DESCRIPTION"]].join(" ").trim()
-  };
-}
-
-function hasNoName(pkg: { [key: string]: string }): boolean {
-  return pkg["NAME"] === undefined;
-}
-
-function packagesFromString(data: string): NPMPackage[] {
-  const { lines, columns } = processRawString(data);
-  return lines.reduce((packages: NPMPackage[], line: string) => {
-    const pkg = rawPackageMap(line, columns);
-    if (hasNoName(pkg)) {
-      return [mergePackage(packages[0], pkg), ...packages.slice(1)];
-    } else {
-      return [npmPackage(pkg), ...packages];
+async function getTarget(
+  packages: PackageDetails[]
+): Promise<PackageDetails | undefined> {
+  if (packages.length === 1) {
+    return packages[0];
+  } else if (packages.length > 1) {
+    const selected = await vscode.window.showQuickPick<QuickPickPackage>(
+      packages.map(packageToQuickPick)
+    );
+    if (selected === undefined) {
+      return;
     }
-  }, []);
+    return selected.package;
+  }
+
+  return undefined;
+}
+
+async function installPackage(
+  pkg: string,
+  cwd: string,
+  flags?: string
+): Promise<void> {
+  try {
+    const output = await runCmd(`npm install ${flags || ""} ${pkg}`, cwd);
+    vscode.window.showInformationMessage(`Installed ${pkg} successfully.`);
+    if (channel !== undefined) {
+      channel.appendLine(output);
+    }
+  } catch (err) {
+    if (channel !== undefined) {
+      channel.appendLine(`Could not install package to ${cwd}: ${err}`);
+    }
+  }
+}
+
+async function search(packageName: string): Promise<NPMPackage[]> {
+  try {
+    const data = await runCmd(`npm s --long ${packageName}`);
+    return packagesFromString(data);
+  } catch (err) {
+    if (channel !== undefined) {
+      channel.appendLine(`NPM search failed.\n${err}`);
+    }
+    return [];
+  }
 }
 
 export function deactivate() {}

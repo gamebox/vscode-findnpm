@@ -14,14 +14,32 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:extension.findnpm"
+    "onCommand:extension.findnpm.install",
+    "onCommand:extension.findnpm.installSave",
+    "onCommand:extension.findnpm.installDev",
+    "onCommand:extension.findnpm.view"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "extension.findnpm",
-        "title": "Search NPM for packages",
+        "command": "extension.findnpm.install",
+        "title": "Search and install without saving",
+        "category": "FindNPM"
+      },
+      {
+        "command": "extension.findnpm.installSave",
+        "title": "Search and install as a dependency",
+        "category": "FindNPM"
+      },
+      {
+        "command": "extension.findnpm.installDev",
+        "title": "Search and install as a devDependency",
+        "category": "FindNPM"
+      },
+      {
+        "command": "extension.findnpm.view",
+        "title": "Search and view in browser",
         "category": "FindNPM"
       }
     ]
