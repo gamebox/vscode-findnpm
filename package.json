@@ -2,7 +2,7 @@
   "name": "findnpm",
   "displayName": "FindNPM",
   "description": "",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.39.0"
   },
